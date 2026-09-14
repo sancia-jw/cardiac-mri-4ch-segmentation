@@ -1,0 +1,4 @@
+experiment: bemd_ablation
+train:
+  runs:
+    - subtract_bimf_0

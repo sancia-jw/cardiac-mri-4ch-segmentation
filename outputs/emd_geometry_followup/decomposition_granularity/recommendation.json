@@ -1,0 +1,62 @@
+{
+  "question": "Which 2D EMD configuration/backend gives the most meaningful multiscale decomposition of these MRI images, and why?",
+  "recommended_for_next_segmentation_screen": "bemd_default_square_pad",
+  "recommended_protocol": {
+    "backend": "PyEMD.BEMD",
+    "preprocess": "zero-pad to square max(H,W), run BEMD, crop components back to native FOV",
+    "params": {
+      "FIXE": 1,
+      "mean_thr": 0.01,
+      "mse_thr": 0.01,
+      "max_imf": 4
+    },
+    "why_pad": "Native non-square CMR frames crash BEMD extrema indexing (IndexError). Square pad avoids the bug."
+  },
+  "rationale": "EMD2D cannot produce >1 BIMF on synthetic or MRI under any tested threshold/FIXE settings because the residue after BIMF0 has 0 extrema under the 3x3 detector. BEMD with square padding yields 4 BIMFs on 8/8 MRI probes (~15s/slice), near-perfect reconstruction, and often (not always) decreasing spectral centroids. This is the only true-2D option that enables a genuine BIMF0..k + residual component sweep. Caveat: PyEMD marks BEMD experimental; centroid monotonicity is imperfect (~3/8 fully mono).",
+  "approaches": {
+    "emd2d_default": {
+      "typical_n_bimf": 1,
+      "scale_separation": "poor (single broad BIMF + smooth residual)",
+      "reconstruction": "excellent (~1e-14 RMSE)",
+      "runtime_sec": "~0.2",
+      "failure_mode": "stops when residue extrema <=4",
+      "appropriate_for_bimfk_ablation": false
+    },
+    "emd2d_tuned": {
+      "typical_n_bimf": 1,
+      "scale_separation": "unchanged vs default",
+      "reconstruction": "excellent",
+      "runtime_sec": "0.2-3",
+      "failure_mode": "same extrema stop; stricter thr does not create later BIMFs",
+      "appropriate_for_bimfk_ablation": false
+    },
+    "bemd_native_nonsquare": {
+      "typical_n_bimf": "crash",
+      "failure_mode": "IndexError in envelope sampling on non-square arrays",
+      "appropriate_for_bimfk_ablation": false
+    },
+    "bemd_square_pad": {
+      "typical_n_bimf": 4,
+      "mri_frac_multi": 1.0,
+      "mri_mono_frac_approx": 0.375,
+      "scale_separation": "useful but imperfect monotonicity",
+      "reconstruction": "excellent (~1e-13 RMSE after crop)",
+      "runtime_sec": "~13-20 per slice",
+      "failure_mode": "experimental API; pad may introduce weak edge artifacts",
+      "appropriate_for_bimfk_ablation": true
+    }
+  },
+  "success_criteria_check": {
+    "reconstruction": true,
+    "synthetic_multi_bimf": true,
+    "mri_multi_fraction": true,
+    "centroids_monotonic_always": false,
+    "visually_interpretable": "partially \u2014 use figures under mri_representatives/",
+    "runtime_tractable_for_subset_screen": true
+  },
+  "no_unet_training": true,
+  "do_not_use_for_next_screen": [
+    "emd2d_default",
+    "emd2d_*_tuned"
+  ]
+}

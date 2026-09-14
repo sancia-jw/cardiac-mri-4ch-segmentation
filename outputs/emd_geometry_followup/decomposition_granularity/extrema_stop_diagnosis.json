@@ -1,0 +1,9 @@
+{
+  "mentor": "CINE_4CH_009_frame083",
+  "default_n_bimf": 1,
+  "residual_extrema_after_bimf0": {
+    "n_min": 0,
+    "n_max": 0
+  },
+  "conclusion": "Stops because residue after BIMF0 has too few extrema (need >4 each)."
+}

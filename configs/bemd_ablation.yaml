@@ -1,0 +1,38 @@
+# BEMD ablation — base settings (overrides via CLI still win when passed explicitly).
+# Reconstruction: Gastro-style (per-BIMF min-max, subtract from raw, finalize min-max).
+# Decomposition: bemd_default_square_pad (zero-pad square → PyEMD.BEMD → crop).
+
+experiment: bemd_ablation
+decomposition_method: bemd_default_square_pad
+
+preprocess:
+  split: all
+  workers: null          # null → conservative default (min(4, cpu-1))
+  force: false
+  max_imf: 4
+  mean_thr: 0.01
+  mse_thr: 0.01
+  FIXE: 1
+  FIXE_H: 0
+
+train:
+  epochs: 15
+  batch_size: 4
+  lr: 0.001
+  seed: 42
+  device: auto
+  runs:
+    - original
+    - subtract_bimf_0
+    - subtract_bimf_1
+    - subtract_bimf_2
+    - subtract_bimf_3
+    - subtract_bimf_0_1
+
+reconstruction:
+  style: gastro
+  normalize_bimfs: true
+  clip_output: true
+  note: >
+    processed = original - sum(minmax(BIMF[k] for k in indices));
+    then per-slice min-max to [0,1]. Same convention as historical EMD ablation.

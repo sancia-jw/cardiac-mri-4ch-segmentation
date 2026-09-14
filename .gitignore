@@ -1,0 +1,48 @@
+# Virtual env / tooling
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Secrets / local env
+.env
+.env.*
+credentials.json
+*.pem
+*.key
+
+# Raw MRI / annotations / bulky local trees
+CMR-MULTI/
+CMR_multi_baseline/
+external/
+*.nii
+*.nii.gz
+
+# Generated research artifacts
+outputs/**
+**/bemd_cache/
+**/emd_cache/
+**/bemd_enhanced_cache/
+**/*.pt
+**/*.npy
+**/*.npz
+
+# Allow small intentional docs/figures only (parents must be un-ignored)
+!outputs/bemd_ablation/
+!outputs/bemd_ablation/README.md
+!outputs/bemd_ablation/figures/
+!outputs/bemd_ablation/figures/*.png
+!outputs/emd_geometry_followup/
+!outputs/emd_geometry_followup/decomposition_granularity/
+!outputs/emd_geometry_followup/decomposition_granularity/*.md
+!outputs/emd_geometry_followup/decomposition_granularity/*.json
+!outputs/splits_4ch.csv
