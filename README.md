@@ -89,10 +89,12 @@ segmentation/
 
 True-2D backend after the EMD2D audit: `bemd_default_square_pad`. See `outputs/bemd_ablation/README.md`.
 
+For the validated five-condition primary experiment, cache exclusions, and
+private Kaggle dataset transfer, see [the Kaggle handoff](docs/bemd_kaggle.md).
+Use `--validate-only` to check the cache without training or evaluation.
+
 ```bash
-python scripts/preprocess_bemd.py --config configs/bemd_ablation.yaml --workers 3
-python scripts/run_bemd_ablation.py --config configs/bemd_ablation.yaml
-python scripts/aggregate_bemd_ablation.py
+python scripts/run_bemd_ablation.py --config configs/bemd_ablation.yaml --exclusions configs/bemd_exclusions.json --validate-only
 ```
 
 Do not overwrite `outputs/emd_ablation/` (historical 1D Holman results).

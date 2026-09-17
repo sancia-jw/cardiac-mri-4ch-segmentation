@@ -34,13 +34,14 @@ from cine_4ch.ablation import (
 )
 from cine_4ch.bemd_cache import BEMD_CACHE_ROOT, METHOD_ID
 from cine_4ch.bemd_dataset import (
+    ENHANCED_CACHE_ROOT,
     BEMDEnhanceSpec,
     BEMDSliceDataset,
     default_bemd_ablation_specs,
     required_bimf_count,
     spec_to_dict,
 )
-from cine_4ch.config import DEFAULT_IMAGE_SIZE, LABEL_NAMES, NUM_CLASSES, OUTPUTS_DIR, PROJECT_ROOT
+from cine_4ch.config import DATA_ROOT, DEFAULT_IMAGE_SIZE, LABEL_NAMES, NUM_CLASSES, OUTPUTS_DIR, PROJECT_ROOT
 from cine_4ch.dataset import load_split_cases
 from cine_4ch.io import choose_representative_frame, load_pair
 from cine_4ch.model import UNet2D
@@ -106,6 +107,9 @@ def collect_provenance(
     bemd_cache_root: Path,
     splits_csv: Path,
     bemd_cfg: Optional[BEMDConfig] = None,
+    data_root: Path = DATA_ROOT,
+    enhanced_cache_root: Path = ENHANCED_CACHE_ROOT,
+    excluded_frames: frozenset[tuple[str, int]] = frozenset(),
 ) -> Dict[str, Any]:
     cfg = bemd_cfg or BEMDConfig()
     return {
@@ -122,6 +126,9 @@ def collect_provenance(
         "split_counts_expected": {"train": 74, "val": 16, "test": 15},
         "decomposition_method": METHOD_ID,
         "bemd_cache_root": str(bemd_cache_root),
+        "data_root": str(data_root),
+        "enhanced_cache_root": str(enhanced_cache_root),
+        "excluded_frames": [{"case_stem": s, "frame_idx": f} for s, f in sorted(excluded_frames)],
         "bemd_settings": asdict(cfg),
         "padding_method": "zero_bottom_right_to_max_hw",
         "reconstruction_convention": (
@@ -170,6 +177,9 @@ def train_bemd_run(
     bemd_cache_root: Path = BEMD_CACHE_ROOT,
     train_cases: Optional[list] = None,
     val_cases: Optional[list] = None,
+    data_root: Path = DATA_ROOT,
+    enhanced_cache_root: Path = ENHANCED_CACHE_ROOT,
+    excluded_frames: frozenset[tuple[str, int]] = frozenset(),
 ) -> Dict[str, Any]:
     set_seed(hyperparams.seed)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -183,13 +193,16 @@ def train_bemd_run(
         device=device,
         bemd_cache_root=bemd_cache_root,
         splits_csv=splits_csv,
+        data_root=data_root,
+        enhanced_cache_root=enhanced_cache_root,
+        excluded_frames=excluded_frames,
     )
     save_run_artifacts(run_dir, spec, hyperparams, provenance)
 
     if train_cases is None:
-        train_cases = load_split_cases(splits_csv, "train")
+        train_cases = load_split_cases(splits_csv, "train", data_root=data_root)
     if val_cases is None:
-        val_cases = load_split_cases(splits_csv, "val")
+        val_cases = load_split_cases(splits_csv, "val", data_root=data_root)
 
     print(f"\n=== BEMD run: {spec.run_id} ===")
     print(f"Enhance: mode={spec.mode} bimf_indices={list(spec.bimf_indices)}")
@@ -203,6 +216,8 @@ def train_bemd_run(
         bemd_cache_root=bemd_cache_root,
         require_n_bimf=need or None,
         precompute_desc=f"{spec.run_id} train",
+        enhanced_cache_root=enhanced_cache_root,
+        excluded_frames=excluded_frames,
     )
     val_ds = BEMDSliceDataset(
         val_cases,
@@ -212,6 +227,8 @@ def train_bemd_run(
         bemd_cache_root=bemd_cache_root,
         require_n_bimf=need or None,
         precompute_desc=f"{spec.run_id} val",
+        enhanced_cache_root=enhanced_cache_root,
+        excluded_frames=excluded_frames,
     )
 
     sample_img, sample_mask, _, _ = train_ds[0]
@@ -366,6 +383,9 @@ def evaluate_bemd_test(
     seed: int = 42,
     bemd_cache_root: Path = BEMD_CACHE_ROOT,
     test_cases: Optional[list] = None,
+    data_root: Path = DATA_ROOT,
+    enhanced_cache_root: Path = ENHANCED_CACHE_ROOT,
+    excluded_frames: frozenset[tuple[str, int]] = frozenset(),
 ) -> Dict[str, float]:
     from src.preprocessing.emd_enhancement import safe_minmax_normalize
 
@@ -374,7 +394,7 @@ def evaluate_bemd_test(
     need = required_bimf_count([spec])
 
     if test_cases is None:
-        test_cases = load_split_cases(splits_csv, "test")
+        test_cases = load_split_cases(splits_csv, "test", data_root=data_root)
 
     test_ds = BEMDSliceDataset(
         test_cases,
@@ -384,6 +404,8 @@ def evaluate_bemd_test(
         bemd_cache_root=bemd_cache_root,
         require_n_bimf=need or None,
         precompute_desc=f"{spec.run_id} test",
+        enhanced_cache_root=enhanced_cache_root,
+        excluded_frames=excluded_frames,
     )
     test_loader = DataLoader(
         test_ds,
@@ -413,7 +435,11 @@ def evaluate_bemd_test(
             augment=False,
             bemd_cache_root=bemd_cache_root,
             require_n_bimf=need or None,
+            enhanced_cache_root=enhanced_cache_root,
+            excluded_frames=excluded_frames,
         )
+        if not len(ds):
+            continue
         frame_indices = [i for i, (_, fidx) in enumerate(ds.index) if fidx == frame_idx] or [0]
         image_t, label_t, _, fidx = ds[frame_indices[0]]
         logits = model(image_t.unsqueeze(0).to(device))

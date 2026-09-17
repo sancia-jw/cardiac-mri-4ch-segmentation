@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "method_id": "bemd_default_square_pad",
+  "reconstruction_rmse_fail": 0.001,
+  "frame_indexing": "zero_based",
+  "created_utc": "2026-09-17T15:21:59.597598+00:00",
+  "excluded_frames": [
+    {
+      "case_stem": "CINE_4CH_023",
+      "frame_idx": 16,
+      "reason": "reconstruction_rmse_above_threshold_after_identical_settings_recompute; large cancelling BIMF3/residual amplitudes, not incomplete or corrupt cache",
+      "original_rmse": 0.046689965481377965,
+      "recomputed_rmse": 0.046689965481377965,
+      "recomputed_arrays_identical": true
+    },
+    {
+      "case_stem": "CINE_4CH_051",
+      "frame_idx": 65,
+      "reason": "reconstruction_rmse_above_threshold_after_identical_settings_recompute; large cancelling BIMF3/residual amplitudes, not incomplete or corrupt cache",
+      "original_rmse": 0.136424190191389,
+      "recomputed_rmse": 0.136424190191389,
+      "recomputed_arrays_identical": true
+    },
+    {
+      "case_stem": "CINE_4CH_085",
+      "frame_idx": 65,
+      "reason": "reconstruction_rmse_above_threshold_after_identical_settings_recompute; large cancelling BIMF3/residual amplitudes, not incomplete or corrupt cache",
+      "original_rmse": 0.21324565081617805,
+      "recomputed_rmse": 0.21324565081617805,
+      "recomputed_arrays_identical": true
+    }
+  ]
+}

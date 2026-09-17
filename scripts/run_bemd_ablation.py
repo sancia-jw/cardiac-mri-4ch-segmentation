@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -32,7 +33,10 @@ from cine_4ch.bemd_ablation import (
     write_bemd_summary,
 )
 from cine_4ch.bemd_cache import BEMD_CACHE_ROOT
-from cine_4ch.config import LABEL_NAMES, NUM_CLASSES, OUTPUTS_DIR
+from cine_4ch.config import DATA_ROOT, LABEL_NAMES, NUM_CLASSES, OUTPUTS_DIR
+from cine_4ch.bemd_dataset import required_bimf_count
+from cine_4ch.bemd_validation import audit_cache, load_exclusions
+from cine_4ch.dataset import load_split_cases
 
 
 def merge_summary_rows(summary_path: Path, new_rows: list[dict], catalog_ids: list[str]) -> list[dict]:
@@ -47,11 +51,15 @@ def merge_summary_rows(summary_path: Path, new_rows: list[dict], catalog_ids: li
     return [by_id[rid] for rid in catalog_ids + extras if rid in by_id]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run BEMD BIMF-removal ablation.")
     p.add_argument("--config", type=Path, default=None, help="Optional YAML (runs / hyperparams).")
     p.add_argument("--output-root", type=Path, default=BEMD_ABLATION_ROOT)
     p.add_argument("--cache-root", type=Path, default=BEMD_CACHE_ROOT)
+    p.add_argument("--data-root", type=Path, default=DATA_ROOT, help="Directory containing 4CH_TR/image and 4CH_TR/anno.")
+    p.add_argument("--enhanced-cache-root", type=Path, default=None, help="Writable derived-image cache; default: <output-root>/bemd_enhanced_cache.")
+    p.add_argument("--exclusions", type=Path, default=None, help="Explicit frame exclusions, applied identically to every condition and split.")
+    p.add_argument("--validate-only", action="store_true", help="Read-only split/cache preflight; no training, evaluation, or decomposition.")
     p.add_argument("--splits-csv", type=Path, default=OUTPUTS_DIR / "splits_4ch.csv")
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--batch-size", type=int, default=4)
@@ -62,7 +70,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-train", action="store_true")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--num-overlays", type=int, default=10)
-    return p.parse_args()
+    argv = sys.argv[1:] if argv is None else argv
+    args = p.parse_args(argv)
+    args._explicit_flags = {arg.split("=", 1)[0] for arg in argv if arg.startswith("--")}
+    return args
 
 
 def _apply_yaml(args: argparse.Namespace) -> argparse.Namespace:
@@ -77,6 +88,9 @@ def _apply_yaml(args: argparse.Namespace) -> argparse.Namespace:
     for key, attr in [
         ("output_root", "output_root"),
         ("cache_root", "cache_root"),
+        ("data_root", "data_root"),
+        ("enhanced_cache_root", "enhanced_cache_root"),
+        ("exclusions", "exclusions"),
         ("splits_csv", "splits_csv"),
         ("epochs", "epochs"),
         ("batch_size", "batch_size"),
@@ -85,9 +99,9 @@ def _apply_yaml(args: argparse.Namespace) -> argparse.Namespace:
         ("device", "device"),
         ("runs", "runs"),
     ]:
-        if key in train and train[key] is not None:
+        if key in train and train[key] is not None and "--" + attr.replace("_", "-") not in args._explicit_flags:
             val = train[key]
-            if attr in ("output_root", "cache_root", "splits_csv"):
+            if attr in ("output_root", "cache_root", "splits_csv", "data_root", "enhanced_cache_root", "exclusions"):
                 val = Path(val)
             setattr(args, attr, val)
     return args
@@ -127,7 +141,30 @@ def main() -> int:
     else:
         specs = catalog
 
+    excluded_frames = load_exclusions(args.exclusions)
+    split_cases = {split: load_split_cases(args.splits_csv, split, data_root=args.data_root)
+                   for split in ("train", "val", "test")}
+    counts = {split: len(cases) for split, cases in split_cases.items()}
+    cases = [case for group in split_cases.values() for case in group]
+    if counts != {"train": 74, "val": 16, "test": 15} or len({case.stem for case in cases}) != 105:
+        raise ValueError(f"Expected disjoint fixed 74/16/15 case split; found {counts}")
+    preflight = audit_cache(cases, args.cache_root, excluded_frames, required_bimf_count(specs), progress=True)
+    preflight.update({"case_split_counts": counts, "runs": [s.run_id for s in specs],
+                      "data_root": str(args.data_root), "cache_root": str(args.cache_root),
+                      "output_root": str(args.output_root)})
+    print(json.dumps(preflight, indent=2))
+    if preflight["issues"]:
+        print("Cache preflight failed; no training or evaluation started.", file=sys.stderr)
+        return 1
+    if args.validate_only:
+        print("Validation only complete. No training, evaluation, or decomposition ran.")
+        return 0
+
     args.output_root.mkdir(parents=True, exist_ok=True)
+    (args.output_root / "cache_preflight.json").write_text(json.dumps(preflight, indent=2), encoding="utf-8")
+    if args.exclusions:
+        (args.output_root / "exclusions.json").write_text(args.exclusions.read_text(encoding="utf-8"), encoding="utf-8")
+    enhanced_cache_root = args.enhanced_cache_root or args.output_root / "bemd_enhanced_cache"
     summary_rows = []
 
     for spec in specs:
@@ -141,6 +178,11 @@ def main() -> int:
                 device,
                 resume=args.resume,
                 bemd_cache_root=Path(args.cache_root),
+                data_root=args.data_root,
+                enhanced_cache_root=enhanced_cache_root,
+                excluded_frames=excluded_frames,
+                train_cases=split_cases["train"],
+                val_cases=split_cases["val"],
             )
         else:
             val_summary = load_val_summary_from_run(run_dir)
@@ -154,6 +196,10 @@ def main() -> int:
             num_overlays=args.num_overlays,
             seed=args.seed,
             bemd_cache_root=Path(args.cache_root),
+            data_root=args.data_root,
+            enhanced_cache_root=enhanced_cache_root,
+            excluded_frames=excluded_frames,
+            test_cases=split_cases["test"],
         )
 
         row = {
@@ -201,8 +247,6 @@ def main() -> int:
 
     write_bemd_summary(merged, summary_path)
     # Machine-readable JSON twin
-    import json
-
     (args.output_root / "ablation_summary.json").write_text(
         json.dumps(merged, indent=2), encoding="utf-8"
     )

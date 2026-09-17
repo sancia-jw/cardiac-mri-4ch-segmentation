@@ -103,8 +103,8 @@ def required_bimf_count(specs: Sequence[BEMDEnhanceSpec] | None = None) -> int:
     return needed
 
 
-def _enhanced_path(case_stem: str, frame_idx: int, key: str) -> Path:
-    return ENHANCED_CACHE_ROOT / key / case_stem / f"frame_{frame_idx:03d}.npy"
+def _enhanced_path(case_stem: str, frame_idx: int, key: str, root: Path = ENHANCED_CACHE_ROOT) -> Path:
+    return root / key / case_stem / f"frame_{frame_idx:03d}.npy"
 
 
 def enhance_frame_from_cache(
@@ -141,12 +141,16 @@ class BEMDSliceDataset(Dataset):
         use_enhanced_disk_cache: bool = True,
         require_n_bimf: Optional[int] = None,
         precompute_desc: str | None = None,
+        enhanced_cache_root: Path = ENHANCED_CACHE_ROOT,
+        excluded_frames: frozenset[tuple[str, int]] = frozenset(),
     ) -> None:
         self.cases = list(cases)
         self.spec = spec
         self.image_size = image_size
         self.augment = augment
         self.bemd_cache_root = Path(bemd_cache_root)
+        self.enhanced_cache_root = Path(enhanced_cache_root)
+        self.excluded_frames = frozenset(excluded_frames)
         self.use_enhanced_disk_cache = use_enhanced_disk_cache
         self.require_n_bimf = require_n_bimf
         if self.require_n_bimf is None and spec.bimf_indices:
@@ -162,6 +166,8 @@ class BEMDSliceDataset(Dataset):
             self._labels.append(label)
             n_frames = 1 if label.ndim < 3 else int(label.shape[-1])
             for frame_idx in range(n_frames):
+                if (case.stem, frame_idx) in self.excluded_frames:
+                    continue
                 self.index.append((case_idx, frame_idx))
                 if not is_valid_cache_entry(
                     case.stem,
@@ -187,7 +193,7 @@ class BEMDSliceDataset(Dataset):
         out: List[np.ndarray] = []
         for case_idx, frame_idx in tqdm(self.index, desc=desc, leave=False):
             case = self.cases[case_idx]
-            path = _enhanced_path(case.stem, frame_idx, key)
+            path = _enhanced_path(case.stem, frame_idx, key, self.enhanced_cache_root)
             if self.use_enhanced_disk_cache and path.is_file():
                 out.append(np.load(path))
                 continue

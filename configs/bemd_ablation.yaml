@@ -21,12 +21,12 @@ train:
   lr: 0.001
   seed: 42
   device: auto
+  # Primary full-frame conditions. BIMF3 remains a separate common-subset study.
   runs:
     - original
     - subtract_bimf_0
     - subtract_bimf_1
     - subtract_bimf_2
-    - subtract_bimf_3
     - subtract_bimf_0_1
 
 reconstruction:
