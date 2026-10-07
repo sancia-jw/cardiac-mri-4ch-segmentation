@@ -1,7 +1,12 @@
-"""Dataset that applies BEMD subtract modes from a persistent decomposition cache.
+"""Dataset that applies component-removal conditions to 4CH frames.
 
-Training never runs BEMD; it only loads cached BIMFs / residual and applies the
-Gastro-style subtract + finalize used by the historical 1D EMD ablation.
+``source="bemd_cache"`` (legacy): training never runs BEMD; it only loads cached
+BIMFs / residual and applies the Gastro-style subtract + finalize used by the
+historical 1D EMD ablation.
+
+Other sources (``src.preprocessing.multiscale``: Gaussian bands, FABEMD) are
+decomposed on the fly from the raw frame and removed amplitude-faithfully; the
+derived inputs are still written to the enhanced cache.
 """
 
 from __future__ import annotations
@@ -20,15 +25,22 @@ from tqdm import tqdm
 from cine_4ch.bemd_cache import BEMD_CACHE_ROOT, is_valid_cache_entry, load_decomposition
 from cine_4ch.config import DEFAULT_IMAGE_SIZE, OUTPUTS_DIR
 from cine_4ch.dataset import _resize_slice, _to_image_tensor
-from cine_4ch.io import CasePair, extract_frame, load_pair
+from cine_4ch.io import CasePair, extract_frame, load_pair, load_volume
+from src.preprocessing import multiscale
+from src.preprocessing.bemd_square_pad import METHOD_ID as BEMD_METHOD_ID
 from src.preprocessing.bemd_square_pad import BEMDConfig, enhance_from_bemd_decomp
+from src.preprocessing.emd_enhancement import as_grayscale_slice, safe_minmax_normalize
 
 ENHANCED_CACHE_ROOT = OUTPUTS_DIR / "bemd_enhanced_cache"
+
+BEMD_CACHE_SOURCE = "bemd_cache"
+LEGACY_RECONSTRUCTION = "gastro_style_minmax_bimf_then_finalize"
+AMPLITUDE_RECONSTRUCTION = "amplitude_subtract_then_finalize"
 
 
 @dataclass(frozen=True)
 class BEMDEnhanceSpec:
-    """One ablation condition applied on top of cached BEMD decompositions."""
+    """One ablation condition: which components to remove, and from which decomposition."""
 
     run_id: str
     mode: str  # original | subtract
@@ -36,6 +48,20 @@ class BEMDEnhanceSpec:
     description: str = ""
     normalize_bimfs: bool = True
     clip_output: bool = True
+    # bemd_cache | a src.preprocessing.multiscale method id
+    source: str = BEMD_CACHE_SOURCE
+
+    @property
+    def uses_bemd_cache(self) -> bool:
+        return self.source == BEMD_CACHE_SOURCE
+
+    @property
+    def decomposition_method(self) -> str:
+        return BEMD_METHOD_ID if self.uses_bemd_cache else self.source
+
+    @property
+    def reconstruction(self) -> str:
+        return LEGACY_RECONSTRUCTION if self.uses_bemd_cache else AMPLITUDE_RECONSTRUCTION
 
     def cache_key(self) -> str:
         payload = {
@@ -44,8 +70,11 @@ class BEMDEnhanceSpec:
             "bimf_indices": list(self.bimf_indices),
             "normalize_bimfs": self.normalize_bimfs,
             "clip_output": self.clip_output,
-            "reconstruction": "gastro_style_minmax_bimf_then_finalize",
+            "reconstruction": self.reconstruction,
         }
+        # Only non-legacy sources add the key, so existing enhanced caches stay valid.
+        if not self.uses_bemd_cache:
+            payload["source"] = self.source
         digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
         return f"{self.run_id}_{digest}"
 
@@ -94,11 +123,60 @@ def default_bemd_ablation_specs() -> List[BEMDEnhanceSpec]:
     ]
 
 
+RAW_SOURCE = "raw"  # original-mode baseline read straight from the MRI, no cache
+
+
+def multiscale_ablation_specs() -> List[BEMDEnhanceSpec]:
+    """Fine-scale removal: Gaussian octave bands and FABEMD BIMFs (amplitude-faithful)."""
+    sigmas = multiscale.GAUSSIAN_SIGMAS
+    edges = (0.0,) + tuple(sigmas)
+    specs = [
+        BEMDEnhanceSpec(
+            run_id="original",
+            mode="original",
+            bimf_indices=(),
+            description="Normalized original MRI only (no component removal).",
+            source=RAW_SOURCE,
+        )
+    ]
+    for k in range(len(sigmas)):
+        specs.append(
+            BEMDEnhanceSpec(
+                run_id=f"subtract_gband_{k}",
+                mode="subtract",
+                bimf_indices=(k,),
+                description=f"Original minus Gaussian band {k} (sigma {edges[k]:g}-{edges[k + 1]:g} px).",
+                source=multiscale.GAUSSIAN_BANDS_ID,
+            )
+        )
+    # BIMF 4 is excluded: ~36% of frames reach it only via the window-doubling
+    # fallback and 26 frames are too small for it.
+    typical_windows = (3, 7, 17, 33)
+    for k, w in enumerate(typical_windows):
+        specs.append(
+            BEMDEnhanceSpec(
+                run_id=f"subtract_fabemd_{k}",
+                mode="subtract",
+                bimf_indices=(k,),
+                description=f"Original minus FABEMD BIMF {k} (median envelope window {w} px).",
+                source=multiscale.FABEMD_ID,
+            )
+        )
+    return specs
+
+
+CATALOGS = {
+    "bemd": default_bemd_ablation_specs,
+    "multiscale": multiscale_ablation_specs,
+}
+
+
 def required_bimf_count(specs: Sequence[BEMDEnhanceSpec] | None = None) -> int:
+    """BIMFs the BEMD cache must hold; on-the-fly sources need none."""
     specs = list(specs) if specs is not None else default_bemd_ablation_specs()
     needed = 0
     for s in specs:
-        if s.bimf_indices:
+        if s.bimf_indices and s.uses_bemd_cache:
             needed = max(needed, max(s.bimf_indices) + 1)
     return needed
 
@@ -121,6 +199,18 @@ def enhance_frame_from_cache(
         bimf_indices=spec.bimf_indices,
         normalize_bimfs=spec.normalize_bimfs,
         clip_output=spec.clip_output,
+    )
+
+
+def enhance_frame_from_raw(raw_2d: np.ndarray, spec: BEMDEnhanceSpec) -> np.ndarray:
+    """On-the-fly decomposition + amplitude-faithful removal for non-cache sources."""
+    if spec.mode == "original":
+        return safe_minmax_normalize(as_grayscale_slice(raw_2d), clip=spec.clip_output)
+    if spec.mode != "subtract":
+        raise ValueError(f"Unsupported enhance mode: {spec.mode}")
+    decomp = multiscale.decompose(spec.source, raw_2d)
+    return multiscale.subtract_components(
+        decomp.original, decomp.components, spec.bimf_indices, clip_output=spec.clip_output
     )
 
 
@@ -169,7 +259,7 @@ class BEMDSliceDataset(Dataset):
                 if (case.stem, frame_idx) in self.excluded_frames:
                     continue
                 self.index.append((case_idx, frame_idx))
-                if not is_valid_cache_entry(
+                if spec.uses_bemd_cache and not is_valid_cache_entry(
                     case.stem,
                     frame_idx,
                     cache_root=self.bemd_cache_root,
@@ -191,18 +281,25 @@ class BEMDSliceDataset(Dataset):
     def _precompute(self, desc: str) -> None:
         key = self.spec.cache_key()
         out: List[np.ndarray] = []
+        raw_case_idx, raw_volume = None, None  # index is case-ordered: load each volume once
         for case_idx, frame_idx in tqdm(self.index, desc=desc, leave=False):
             case = self.cases[case_idx]
             path = _enhanced_path(case.stem, frame_idx, key, self.enhanced_cache_root)
             if self.use_enhanced_disk_cache and path.is_file():
                 out.append(np.load(path))
                 continue
-            arr = enhance_frame_from_cache(
-                case.stem,
-                frame_idx,
-                self.spec,
-                bemd_cache_root=self.bemd_cache_root,
-            )
+            if self.spec.uses_bemd_cache:
+                arr = enhance_frame_from_cache(
+                    case.stem,
+                    frame_idx,
+                    self.spec,
+                    bemd_cache_root=self.bemd_cache_root,
+                )
+            else:
+                if raw_case_idx != case_idx:
+                    raw_volume, _ = load_volume(case.image_path)
+                    raw_case_idx = case_idx
+                arr = enhance_frame_from_raw(extract_frame(raw_volume, frame_idx), self.spec)
             if self.use_enhanced_disk_cache:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 np.save(path, arr.astype(np.float32, copy=False))

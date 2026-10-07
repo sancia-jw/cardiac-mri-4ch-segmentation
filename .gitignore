@@ -26,6 +26,14 @@ CMR_multi_baseline/
 external/
 *.nii
 *.nii.gz
+*.zip
+CMR-MULTI_*_for_kaggle.zip
+
+# Credentials and downloaded Kaggle run outputs
+kaggle_API_token.txt
+access_token
+kaggle.json
+kaggle_output/
 
 # Generated research artifacts
 outputs/**

@@ -46,6 +46,7 @@ from cine_4ch.dataset import load_split_cases
 from cine_4ch.io import choose_representative_frame, load_pair
 from cine_4ch.model import UNet2D
 from cine_4ch.viz import overlay_label
+from src.preprocessing import multiscale
 from src.preprocessing.bemd_square_pad import BEMDConfig, pyemd_version
 
 # Re-export for scripts
@@ -99,6 +100,20 @@ def _git_info() -> Dict[str, Any]:
     return info
 
 
+def _multiscale_settings(source: str) -> Dict[str, Any]:
+    if source == multiscale.GAUSSIAN_BANDS_ID:
+        return {"method_id": source, "sigmas": list(multiscale.GAUSSIAN_SIGMAS), "boundary": "mirror"}
+    if source == multiscale.FABEMD_ID:
+        return {
+            "method_id": source,
+            "max_imf": multiscale.FABEMD_MAX_IMF,
+            "min_extrema": multiscale.FABEMD_MIN_EXTREMA,
+            "window_rule": "odd ceil(min median NN spacing of maxima/minima), >=3, >= prev+2; doubles when extrema run out",
+            "envelope": "max/min filter then mean filter, boundary mirror",
+        }
+    return {"method_id": source}
+
+
 def collect_provenance(
     *,
     spec: BEMDEnhanceSpec,
@@ -124,16 +139,28 @@ def collect_provenance(
         "seed": hyperparams.seed,
         "splits_csv": str(splits_csv),
         "split_counts_expected": {"train": 74, "val": 16, "test": 15},
-        "decomposition_method": METHOD_ID,
-        "bemd_cache_root": str(bemd_cache_root),
+        "decomposition_method": spec.decomposition_method,
+        "bemd_cache_root": str(bemd_cache_root) if spec.uses_bemd_cache else None,
         "data_root": str(data_root),
         "enhanced_cache_root": str(enhanced_cache_root),
         "excluded_frames": [{"case_stem": s, "frame_idx": f} for s, f in sorted(excluded_frames)],
-        "bemd_settings": asdict(cfg),
-        "padding_method": "zero_bottom_right_to_max_hw",
-        "reconstruction_convention": (
-            "gastro_style: per-BIMF min-max (normalize_bimfs=True) then "
-            "original - sum(selected); finalize with per-slice min-max to [0,1]"
+        **(
+            {
+                "bemd_settings": asdict(cfg),
+                "padding_method": "zero_bottom_right_to_max_hw",
+                "reconstruction_convention": (
+                    "gastro_style: per-BIMF min-max (normalize_bimfs=True) then "
+                    "original - sum(selected); finalize with per-slice min-max to [0,1]"
+                ),
+            }
+            if spec.uses_bemd_cache
+            else {
+                "multiscale_settings": _multiscale_settings(spec.source),
+                "reconstruction_convention": (
+                    "amplitude_faithful: unit-normalize original, subtract selected "
+                    "components at their own amplitude; finalize with per-slice min-max to [0,1]"
+                ),
+            }
         ),
         "hyperparams": asdict(hyperparams),
         "model": "UNet2D",
@@ -159,8 +186,8 @@ def save_run_artifacts(
         "hyperparams": asdict(hyperparams),
         "in_channels": 1,
         "num_classes": NUM_CLASSES,
-        "experiment": "bemd_ablation",
-        "decomposition_method": METHOD_ID,
+        "experiment": "bemd_ablation" if spec.uses_bemd_cache else "multiscale_ablation",
+        "decomposition_method": spec.decomposition_method,
     }
     (run_dir / "config.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     (run_dir / "provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
@@ -204,9 +231,10 @@ def train_bemd_run(
     if val_cases is None:
         val_cases = load_split_cases(splits_csv, "val", data_root=data_root)
 
-    print(f"\n=== BEMD run: {spec.run_id} ===")
-    print(f"Enhance: mode={spec.mode} bimf_indices={list(spec.bimf_indices)}")
-    print(f"BEMD cache: {bemd_cache_root}")
+    print(f"\n=== Run: {spec.run_id} ({spec.decomposition_method}) ===")
+    print(f"Enhance: mode={spec.mode} indices={list(spec.bimf_indices)}")
+    if spec.uses_bemd_cache:
+        print(f"BEMD cache: {bemd_cache_root}")
 
     train_ds = BEMDSliceDataset(
         train_cases,

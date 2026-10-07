@@ -1,0 +1,44 @@
+# Fine-scale removal ablation (follow-up to the BEMD primary ablation).
+#
+# Why: the primary run's Gastro-style subtraction (min-max BIMF in [0,1] minus
+# raw-intensity MRI) changed model inputs by <0.001, and PyEMD BEMD BIMFs are
+# cancelling components with 10x-10^6x the image energy. These conditions use
+# exact, bounded decompositions computed on the fly from the raw MRI and remove
+# each component at its true amplitude. No BEMD cache is needed.
+#
+# Decompositions (src/preprocessing/multiscale.py):
+#   gaussian_bands_octave: difference-of-Gaussians, sigma 1, 2, 4, 8, 16 px
+#   fabemd_v1: Fast & Adaptive BEMD, order-statistic envelopes; median windows
+#     3, 7, 17, 33 px for BIMFs 0-3
+#
+# Controls are identical to configs/bemd_ablation.yaml, and the same three
+# frame exclusions apply, so the population matches the primary run (8,282).
+
+experiment: multiscale_ablation
+
+train:
+  catalog: multiscale
+  epochs: 15
+  batch_size: 4
+  lr: 0.001
+  seed: 42
+  device: auto
+  exclusions: configs/bemd_exclusions.json
+  runs:
+    - original
+    - subtract_gband_0
+    - subtract_gband_1
+    - subtract_gband_2
+    - subtract_gband_3
+    - subtract_gband_4
+    - subtract_fabemd_0
+    - subtract_fabemd_1
+    - subtract_fabemd_2
+    - subtract_fabemd_3
+
+reconstruction:
+  style: amplitude_faithful
+  clip_output: true
+  note: >
+    unit = minmax(raw); processed = unit - sum(component[k] for k in indices),
+    components at their own amplitude; then per-slice min-max to [0,1].

@@ -7,4 +7,5 @@ tqdm>=4.65.0
 emd>=0.6.0
 EMD-signal>=1.6.0
 scikit-image>=0.22.0
+scipy>=1.10.0
 PyYAML>=6.0

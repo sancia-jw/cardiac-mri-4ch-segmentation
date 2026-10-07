@@ -88,7 +88,8 @@ Cache/MRI arrays, checkpoints, and generated caches remain ignored by Git.
 Preserve the repository's `outputs/splits_4ch.csv`; do not regenerate it.
 Case membership remains 74/16/15, with 5,883/1,245/1,154 usable frames after
 exclusions. The loader resolves cases against `--data-root`, ignoring the
-historical Windows paths in the CSV. Fixed controls remain seed 42, 15 epochs,
+historical Windows paths in the CSV. Fixed controls remain seed 42, 15 epochs
+in the config (`notebooks/bemd_kaggle_primary_50ep.ipynb` passes `--epochs 50` via its `EPOCHS` setting),
 batch size 4, LR 1e-3, the same one-channel UNet2D at 160x160, per-slice
 normalization, horizontal-flip augmentation, Adam, combined loss, Dice metrics,
 and best validation foreground-Dice checkpoint selection. No model code,

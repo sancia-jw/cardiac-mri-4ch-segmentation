@@ -29,6 +29,23 @@ def load_exclusions(path: Path | None) -> frozenset[tuple[str, int]]:
     return frozenset(result)
 
 
+def audit_raw(cases, excluded_frames=frozenset(), *, progress=False) -> dict:
+    """Header-only frame count / shape preflight for conditions that need no BEMD cache."""
+    seen = set()
+    for case in tqdm(cases, desc="raw MRI audit", disable=not progress):
+        shape = tuple(n for n in nib.load(str(case.anno_path)).shape if n != 1)
+        image_shape = tuple(n for n in nib.load(str(case.image_path)).shape if n != 1)
+        if len(shape) not in (2, 3) or image_shape != shape:
+            raise ValueError(f"Unexpected image/annotation shapes for {case.stem}: {image_shape}, {shape}")
+        n_frames = 1 if len(shape) == 2 else shape[-1]
+        seen.update((case.stem, frame) for frame in range(n_frames))
+    unknown = excluded_frames - seen
+    if unknown:
+        raise ValueError(f"Exclusions refer to frames outside the supplied dataset: {sorted(unknown)}")
+    return {"total_frames": len(seen), "excluded_frames": len(excluded_frames),
+            "usable_frames": len(seen - excluded_frames), "issues": []}
+
+
 def audit_cache(cases, cache_root: Path, excluded_frames=frozenset(), required_n_bimf=0, *, progress=False) -> dict:
     """Validate metadata, array headers/sizes and component coverage against raw headers.
 

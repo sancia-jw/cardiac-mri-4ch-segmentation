@@ -2,12 +2,14 @@
 """
 BEMD (square-pad) preprocessing ablation for 4CH cardiac MRI segmentation.
 
-Conditions (independent variable = which BIMF(s) removed):
-  original, subtract_bimf_0, subtract_bimf_1, subtract_bimf_2,
-  subtract_bimf_3, subtract_bimf_0_1
+Catalogs (independent variable = which component(s) removed):
+  bemd (default): original, subtract_bimf_0, subtract_bimf_1, subtract_bimf_2,
+    subtract_bimf_3, subtract_bimf_0_1 -- requires a completed BEMD cache
+    (scripts/preprocess_bemd.py); does NOT run BEMD during training.
+  multiscale: original, subtract_gband_0..4, subtract_fabemd_0..3 -- decomposed
+    on the fly from the raw MRI; no BEMD cache needed.
 
-Requires a completed BEMD cache (scripts/preprocess_bemd.py). Does NOT run BEMD
-during training. Does NOT overwrite outputs/emd_ablation/.
+Does NOT overwrite outputs/emd_ablation/.
 
 Results: outputs/bemd_ablation/<run_id>/
 """
@@ -25,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cine_4ch.ablation import AblationHyperparams
 from cine_4ch.bemd_ablation import (
     BEMD_ABLATION_ROOT,
-    default_bemd_ablation_specs,
     evaluate_bemd_test,
     load_val_summary_from_run,
     resolve_device,
@@ -34,8 +35,8 @@ from cine_4ch.bemd_ablation import (
 )
 from cine_4ch.bemd_cache import BEMD_CACHE_ROOT
 from cine_4ch.config import DATA_ROOT, LABEL_NAMES, NUM_CLASSES, OUTPUTS_DIR
-from cine_4ch.bemd_dataset import required_bimf_count
-from cine_4ch.bemd_validation import audit_cache, load_exclusions
+from cine_4ch.bemd_dataset import CATALOGS, required_bimf_count
+from cine_4ch.bemd_validation import audit_cache, audit_raw, load_exclusions
 from cine_4ch.dataset import load_split_cases
 
 
@@ -66,6 +67,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument("--catalog", type=str, default="bemd", choices=sorted(CATALOGS),
+                   help="Condition catalog --runs selects from (default: bemd).")
     p.add_argument("--runs", type=str, nargs="*", default=None)
     p.add_argument("--skip-train", action="store_true")
     p.add_argument("--resume", action="store_true")
@@ -98,6 +101,7 @@ def _apply_yaml(args: argparse.Namespace) -> argparse.Namespace:
         ("seed", "seed"),
         ("device", "device"),
         ("runs", "runs"),
+        ("catalog", "catalog"),
     ]:
         if key in train and train[key] is not None and "--" + attr.replace("_", "-") not in args._explicit_flags:
             val = train[key]
@@ -112,13 +116,6 @@ def main() -> int:
     if not args.splits_csv.exists():
         print(f"Split file not found: {args.splits_csv}", file=sys.stderr)
         return 1
-    if not Path(args.cache_root).is_dir():
-        print(
-            f"BEMD cache not found: {args.cache_root}\n"
-            "Run: python scripts/preprocess_bemd.py",
-            file=sys.stderr,
-        )
-        return 1
 
     hyperparams = AblationHyperparams(
         epochs=args.epochs,
@@ -130,16 +127,24 @@ def main() -> int:
     print(f"Device: {device}")
     print(f"Hyperparams: {hyperparams}")
 
-    catalog = default_bemd_ablation_specs()
+    catalog = CATALOGS[args.catalog]()
     if args.runs:
         selected = set(args.runs)
         specs = [s for s in catalog if s.run_id in selected]
         missing = selected - {s.run_id for s in specs}
         if missing:
-            print(f"Unknown run ids: {sorted(missing)}", file=sys.stderr)
+            print(f"Unknown run ids for catalog {args.catalog!r}: {sorted(missing)}", file=sys.stderr)
             return 1
     else:
         specs = catalog
+    needs_cache = any(s.uses_bemd_cache for s in specs)
+    if needs_cache and not Path(args.cache_root).is_dir():
+        print(
+            f"BEMD cache not found: {args.cache_root}\n"
+            "Run: python scripts/preprocess_bemd.py",
+            file=sys.stderr,
+        )
+        return 1
 
     excluded_frames = load_exclusions(args.exclusions)
     split_cases = {split: load_split_cases(args.splits_csv, split, data_root=args.data_root)
@@ -148,9 +153,13 @@ def main() -> int:
     cases = [case for group in split_cases.values() for case in group]
     if counts != {"train": 74, "val": 16, "test": 15} or len({case.stem for case in cases}) != 105:
         raise ValueError(f"Expected disjoint fixed 74/16/15 case split; found {counts}")
-    preflight = audit_cache(cases, args.cache_root, excluded_frames, required_bimf_count(specs), progress=True)
-    preflight.update({"case_split_counts": counts, "runs": [s.run_id for s in specs],
-                      "data_root": str(args.data_root), "cache_root": str(args.cache_root),
+    if needs_cache:
+        preflight = audit_cache(cases, args.cache_root, excluded_frames, required_bimf_count(specs), progress=True)
+    else:
+        preflight = audit_raw(cases, excluded_frames, progress=True)
+    preflight.update({"case_split_counts": counts, "catalog": args.catalog, "runs": [s.run_id for s in specs],
+                      "data_root": str(args.data_root),
+                      "cache_root": str(args.cache_root) if needs_cache else None,
                       "output_root": str(args.output_root)})
     print(json.dumps(preflight, indent=2))
     if preflight["issues"]:
@@ -208,8 +217,8 @@ def main() -> int:
             "preprocessing_mode": spec.mode,
             "bimf_indices": str(list(spec.bimf_indices)),
             "description": spec.description,
-            "decomposition_method": "bemd_default_square_pad",
-            "reconstruction": "gastro_style_minmax_bimf_then_finalize",
+            "decomposition_method": spec.decomposition_method,
+            "reconstruction": spec.reconstruction,
             "epochs": hyperparams.epochs,
             "batch_size": hyperparams.batch_size,
             "lr": hyperparams.lr,
@@ -250,7 +259,7 @@ def main() -> int:
     (args.output_root / "ablation_summary.json").write_text(
         json.dumps(merged, indent=2), encoding="utf-8"
     )
-    print(f"\nBEMD ablation summary: {summary_path} ({len(merged)} runs)")
+    print(f"\nAblation summary: {summary_path} ({len(merged)} runs)")
     return 0
 
 
