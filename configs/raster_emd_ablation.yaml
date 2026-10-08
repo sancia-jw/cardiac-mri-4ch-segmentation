@@ -1,0 +1,41 @@
+# Gastro decomposition ablation (github.com/mou58/Gastro, utils/dataloader.py).
+#
+# Gastro's emd2d flattens each image row by row into one 1D signal, runs
+# emd.sift.sift(sift_thresh=1e-8), and reshapes each IMF back to the image. Its
+# main setting subtracts IMFs [-1, -2, -3] (the slowest, trend included).
+#
+# The earlier 1D EMD ablation (outputs/emd_ablation, cine_4ch/ablation.py) used
+# Gastro's convention: each IMF min-max scaled to [0, 1] and subtracted from the
+# raw MRI (range ~700-5,500). Measured on real frames, that moves the model
+# input by ~0.0001, so it trained on near-identical images. Here the
+# unit-normalized frame is sifted and its IMFs are removed at their real size
+# (input change 0.05-0.25), as in configs/multiscale_ablation.yaml.
+#
+# Decomposed on the fly from the raw MRI (~0.2 s/frame, parallel across cases;
+# the derived inputs are cached and reused across seeds). Controls match
+# configs/multiscale_ablation.yaml, including the three frame exclusions.
+# The notebook repeats every condition at seeds 42, 43, 44 via --seed.
+
+experiment: raster_emd_ablation
+
+train:
+  catalog: raster_emd
+  epochs: 15
+  batch_size: 4
+  lr: 0.001
+  seed: 42
+  device: auto
+  exclusions: configs/bemd_exclusions.json
+  runs:
+    - original
+    - subtract_remd_0
+    - subtract_remd_1
+    - subtract_remd_0_1
+    - subtract_remd_trend
+
+reconstruction:
+  style: amplitude_faithful
+  clip_output: true
+  note: >
+    unit = minmax(raw); imfs = emd.sift.sift(unit.ravel()) reshaped row-major;
+    processed = unit - sum(imfs[k] for k in indices); then per-slice min-max to [0,1].

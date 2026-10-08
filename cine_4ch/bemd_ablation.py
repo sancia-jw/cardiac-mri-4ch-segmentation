@@ -111,6 +111,15 @@ def _multiscale_settings(source: str) -> Dict[str, Any]:
             "window_rule": "odd ceil(min median NN spacing of maxima/minima), >=3, >= prev+2; doubles when extrema run out",
             "envelope": "max/min filter then mean filter, boundary mirror",
         }
+    if source == multiscale.RASTER_EMD_ID:
+        import emd
+
+        return {
+            "method_id": source,
+            "flatten_order": "C (row-major, as Gastro emd2d)",
+            "sift_thresh": multiscale.RASTER_EMD_SIFT_THRESH,
+            "emd_version": emd.__version__,
+        }
     return {"method_id": source}
 
 

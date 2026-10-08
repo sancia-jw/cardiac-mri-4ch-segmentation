@@ -4,18 +4,22 @@
 BIMFs / residual and applies the Gastro-style subtract + finalize used by the
 historical 1D EMD ablation.
 
-Other sources (``src.preprocessing.multiscale``: Gaussian bands, FABEMD) are
-decomposed on the fly from the raw frame and removed amplitude-faithfully; the
-derived inputs are still written to the enhanced cache.
+Other sources (``src.preprocessing.multiscale``: Gaussian bands, FABEMD, raster
+EMD) are decomposed on the fly from the raw frame and removed
+amplitude-faithfully; the derived inputs are still written to the enhanced
+cache, in parallel across cases when many frames are missing.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -165,9 +169,31 @@ def multiscale_ablation_specs() -> List[BEMDEnhanceSpec]:
     return specs
 
 
+def raster_emd_ablation_specs() -> List[BEMDEnhanceSpec]:
+    """Gastro 1D raster EMD (``external/Gastro/utils``), IMFs removed amplitude-faithfully."""
+    raw_original = multiscale_ablation_specs()[0]
+    conditions = [
+        ("subtract_remd_0", (0,), "IMF 0 (finest along the raster)"),
+        ("subtract_remd_1", (1,), "IMF 1"),
+        ("subtract_remd_0_1", (0, 1), "IMFs 0 and 1"),
+        ("subtract_remd_trend", (-1, -2, -3), "the 3 slowest IMFs, trend included (Gastro's setting)"),
+    ]
+    return [raw_original] + [
+        BEMDEnhanceSpec(
+            run_id=run_id,
+            mode="subtract",
+            bimf_indices=indices,
+            description=f"Original minus raster-EMD {what}.",
+            source=multiscale.RASTER_EMD_ID,
+        )
+        for run_id, indices, what in conditions
+    ]
+
+
 CATALOGS = {
     "bemd": default_bemd_ablation_specs,
     "multiscale": multiscale_ablation_specs,
+    "raster_emd": raster_emd_ablation_specs,
 }
 
 
@@ -212,6 +238,20 @@ def enhance_frame_from_raw(raw_2d: np.ndarray, spec: BEMDEnhanceSpec) -> np.ndar
     return multiscale.subtract_components(
         decomp.original, decomp.components, spec.bimf_indices, clip_output=spec.clip_output
     )
+
+
+PARALLEL_MIN_FRAMES = 64
+
+
+def _enhance_case_to_cache(case: CasePair, frame_idxs: Sequence[int], spec: BEMDEnhanceSpec, key: str, root: Path) -> None:
+    raw_volume, _ = load_volume(case.image_path)
+    for frame_idx in frame_idxs:
+        arr = enhance_frame_from_raw(extract_frame(raw_volume, frame_idx), spec)
+        path = _enhanced_path(case.stem, frame_idx, key, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp.npy")
+        np.save(tmp, arr.astype(np.float32, copy=False))
+        os.replace(tmp, path)
 
 
 class BEMDSliceDataset(Dataset):
@@ -280,6 +320,8 @@ class BEMDSliceDataset(Dataset):
 
     def _precompute(self, desc: str) -> None:
         key = self.spec.cache_key()
+        if not self.spec.uses_bemd_cache and self.spec.mode != "original":
+            self._precompute_parallel(key)
         out: List[np.ndarray] = []
         raw_case_idx, raw_volume = None, None  # index is case-ordered: load each volume once
         for case_idx, frame_idx in tqdm(self.index, desc=desc, leave=False):
@@ -305,6 +347,32 @@ class BEMDSliceDataset(Dataset):
                 np.save(path, arr.astype(np.float32, copy=False))
             out.append(arr)
         self._preprocessed = out
+
+    def _precompute_parallel(self, key: str) -> None:
+        """Fill the enhanced cache for uncached frames across processes, one case per task.
+
+        Only pays off for slow on-the-fly sources (raster EMD: ~0.2 s/frame), so it
+        runs only when the disk cache is on and enough frames are missing; outputs
+        are identical to the serial path, which then just loads them.
+        """
+        if not self.use_enhanced_disk_cache:
+            return
+        workers = int(os.environ.get("ONTHEFLY_WORKERS", min(4, os.cpu_count() or 1)))
+        todo: Dict[int, List[int]] = {}
+        for case_idx, frame_idx in self.index:
+            path = _enhanced_path(self.cases[case_idx].stem, frame_idx, key, self.enhanced_cache_root)
+            if not path.is_file():
+                todo.setdefault(case_idx, []).append(frame_idx)
+        if workers < 2 or sum(len(v) for v in todo.values()) < PARALLEL_MIN_FRAMES:
+            return
+        # spawn, not fork: the parent already runs torch threads (and Windows has no fork)
+        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            jobs = [
+                pool.submit(_enhance_case_to_cache, self.cases[c], frames, self.spec, key, self.enhanced_cache_root)
+                for c, frames in todo.items()
+            ]
+            for job in tqdm(as_completed(jobs), total=len(jobs), desc=f"{self.spec.run_id} decompose x{workers}", leave=False):
+                job.result()
 
     def __len__(self) -> int:
         return len(self.index)

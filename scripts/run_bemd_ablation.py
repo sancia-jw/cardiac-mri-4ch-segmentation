@@ -8,6 +8,8 @@ Catalogs (independent variable = which component(s) removed):
     (scripts/preprocess_bemd.py); does NOT run BEMD during training.
   multiscale: original, subtract_gband_0..4, subtract_fabemd_0..3 -- decomposed
     on the fly from the raw MRI; no BEMD cache needed.
+  raster_emd: original, subtract_remd_0, _1, _0_1, _trend -- the Gastro 1D
+    raster EMD (external/Gastro/utils), on the fly, IMFs removed at true size.
 
 Does NOT overwrite outputs/emd_ablation/.
 

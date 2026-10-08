@@ -1,9 +1,9 @@
 """
 Fine-grained multiscale decompositions for the scale-removal ablation.
 
-Two decompositions, both exact (``sum(components) + residual == image``),
-bounded, and cheap enough (milliseconds per frame) to compute on the fly from
-the raw MRI, so no decomposition cache is needed:
+Three decompositions, all exact (``sum(components) + residual == image``) and
+cheap enough to compute on the fly from the raw MRI (milliseconds per frame;
+about 0.2 s for ``raster_emd``), so no decomposition cache is needed:
 
 ``gaussian_bands_octave``
     Difference-of-Gaussians bands at fixed octave scales. Band ``k`` holds
@@ -19,6 +19,15 @@ the raw MRI, so no decomposition cache is needed:
     is data-driven from the spacing of local extrema and forced to grow, so
     BIMF 0 is finest and each later BIMF is coarser. One sift per BIMF, as in
     the original FABEMD.
+
+``raster_emd_v1``
+    The Gastro decomposition (``external/Gastro/utils/dataloader.py``, ``emd2d``):
+    the frame is flattened row by row into one long 1D signal, sifted with
+    ``emd.sift.sift(sift_thresh=1e-8)``, and each IMF is reshaped back to the
+    frame. IMF 0 is finest along the raster; the last column is the trend, so
+    Gastro's ``[-1, -2, -3]`` removes the three slowest components. The IMF count
+    varies per frame (9-10 on this data). Here the unit-normalized frame is
+    sifted, so the IMFs are in image units and are removed at their real size.
 
 Removal is amplitude-faithful: components are expressed in the same units as
 the unit-normalized image and subtracted as-is, then the result is min-max
@@ -40,6 +49,9 @@ from src.preprocessing.emd_enhancement import as_grayscale_slice, safe_minmax_no
 
 GAUSSIAN_BANDS_ID = "gaussian_bands_octave"
 FABEMD_ID = "fabemd_v1"
+RASTER_EMD_ID = "raster_emd_v1"
+
+RASTER_EMD_SIFT_THRESH = 1e-8
 
 # Band k spans sigma SIGMAS[k-1]..SIGMAS[k] (sigma 0 = the image itself).
 GAUSSIAN_SIGMAS: Tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0)
@@ -156,9 +168,44 @@ def fabemd(
     )
 
 
+def raster_emd(
+    image_2d: np.ndarray,
+    sift_thresh: float = RASTER_EMD_SIFT_THRESH,
+) -> MultiscaleDecomposition:
+    """
+    Gastro-style 1D EMD of the row-major raster, finest IMF first.
+
+    ``emd.sift.sift`` returns the IMFs with the trend as its last column, and
+    the columns sum exactly to the signal. All columns become components (so
+    negative indices match Gastro's ``imf_index``); ``residual`` is the
+    float round-off, effectively zero.
+    """
+    import warnings
+
+    import emd
+
+    unit = _unit_image(image_2d)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # emd's np.log10(where=...) UserWarning, once per sift
+        imfs = emd.sift.sift(unit.reshape(-1), sift_thresh=sift_thresh)
+    components = [imfs[:, i].reshape(unit.shape) for i in range(imfs.shape[1])]
+    return MultiscaleDecomposition(
+        original=unit,
+        components=components,
+        residual=unit - np.sum(np.stack(components), axis=0),
+        meta={
+            "method_id": RASTER_EMD_ID,
+            "flatten_order": "C",
+            "sift_thresh": sift_thresh,
+            "n_imfs": len(components),
+        },
+    )
+
+
 DECOMPOSERS = {
     GAUSSIAN_BANDS_ID: gaussian_bands,
     FABEMD_ID: fabemd,
+    RASTER_EMD_ID: raster_emd,
 }
 
 
