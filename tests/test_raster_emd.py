@@ -77,12 +77,28 @@ class RasterCatalogTests(unittest.TestCase):
         original = self._build(specs[0], self.root / "orig")
         self.assertGreater(float(np.abs(serial - original).mean()), 1e-3)
 
+    def test_tail_condition_removes_imf5_to_last(self):
+        spec = next(s for s in raster_emd_ablation_specs() if s.run_id == "subtract_remd_5plus")
+        frame = _synthetic_frame(5)
+        d = multiscale.raster_emd(frame)
+        self.assertGreater(d.n_components, 5)
+        expected = multiscale.subtract_components(d.original, d.components, range(5, d.n_components))
+        np.testing.assert_allclose(bemd_dataset.enhance_frame_from_raw(frame, spec), expected)
+        self.assertNotEqual(spec.cache_key(), raster_emd_ablation_specs()[0].cache_key())
+
+    def test_lowfreq_config(self):
+        config = Path(__file__).resolve().parents[1] / "configs/raster_emd_lowfreq.yaml"
+        args = cli._apply_yaml(cli.parse_args(["--config", str(config)]))
+        self.assertEqual(args.catalog, "raster_emd")
+        self.assertEqual((args.epochs, args.batch_size, args.lr, args.seed), (15, 4, 0.001, 42))
+        self.assertTrue(set(args.runs) <= {s.run_id for s in raster_emd_ablation_specs()})
+
     def test_config_controls(self):
         config = Path(__file__).resolve().parents[1] / "configs/raster_emd_ablation.yaml"
         args = cli._apply_yaml(cli.parse_args(["--config", str(config), "--seed", "43"]))
         self.assertEqual(args.catalog, "raster_emd")
         self.assertEqual((args.epochs, args.batch_size, args.lr, args.seed), (15, 4, 0.001, 43))
-        self.assertEqual(args.runs, [s.run_id for s in raster_emd_ablation_specs()])
+        self.assertEqual(args.runs, [s.run_id for s in raster_emd_ablation_specs()][:5])
 
 
 if __name__ == "__main__":

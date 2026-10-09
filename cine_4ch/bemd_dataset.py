@@ -54,6 +54,9 @@ class BEMDEnhanceSpec:
     clip_output: bool = True
     # bemd_cache | a src.preprocessing.multiscale method id
     source: str = BEMD_CACHE_SOURCE
+    # Also remove every component from this index to the last (on-the-fly sources
+    # only); for decompositions whose component count varies per frame.
+    tail_from: Optional[int] = None
 
     @property
     def uses_bemd_cache(self) -> bool:
@@ -79,6 +82,8 @@ class BEMDEnhanceSpec:
         # Only non-legacy sources add the key, so existing enhanced caches stay valid.
         if not self.uses_bemd_cache:
             payload["source"] = self.source
+        if self.tail_from is not None:
+            payload["tail_from"] = self.tail_from
         digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
         return f"{self.run_id}_{digest}"
 
@@ -177,8 +182,13 @@ def raster_emd_ablation_specs() -> List[BEMDEnhanceSpec]:
         ("subtract_remd_1", (1,), "IMF 1"),
         ("subtract_remd_0_1", (0, 1), "IMFs 0 and 1"),
         ("subtract_remd_trend", (-1, -2, -3), "the 3 slowest IMFs, trend included (Gastro's setting)"),
+        # Lower-frequency follow-up. Raster period on real frames (rows are ~155-169 px):
+        # IMF 2 ~43 px, IMF 3 ~100 px, IMF 4 ~220 px (1-2 rows), IMF 5+ several rows.
+        ("subtract_remd_2", (2,), "IMF 2 (~40 px along the raster)"),
+        ("subtract_remd_3", (3,), "IMF 3 (~100 px, about one image row)"),
+        ("subtract_remd_4", (4,), "IMF 4 (~200 px, 1-2 image rows)"),
     ]
-    return [raw_original] + [
+    specs = [raw_original] + [
         BEMDEnhanceSpec(
             run_id=run_id,
             mode="subtract",
@@ -188,6 +198,18 @@ def raster_emd_ablation_specs() -> List[BEMDEnhanceSpec]:
         )
         for run_id, indices, what in conditions
     ]
+    # 9-10 IMFs per frame, so "IMF 5 to the last" can't be a fixed index list.
+    specs.append(
+        BEMDEnhanceSpec(
+            run_id="subtract_remd_5plus",
+            mode="subtract",
+            bimf_indices=(),
+            description="Original minus raster-EMD IMFs 5 to last (structure spanning several rows, trend included).",
+            source=multiscale.RASTER_EMD_ID,
+            tail_from=5,
+        )
+    )
+    return specs
 
 
 CATALOGS = {
@@ -235,8 +257,11 @@ def enhance_frame_from_raw(raw_2d: np.ndarray, spec: BEMDEnhanceSpec) -> np.ndar
     if spec.mode != "subtract":
         raise ValueError(f"Unsupported enhance mode: {spec.mode}")
     decomp = multiscale.decompose(spec.source, raw_2d)
+    indices = list(spec.bimf_indices)
+    if spec.tail_from is not None:
+        indices += [k for k in range(spec.tail_from, decomp.n_components) if k not in indices]
     return multiscale.subtract_components(
-        decomp.original, decomp.components, spec.bimf_indices, clip_output=spec.clip_output
+        decomp.original, decomp.components, indices, clip_output=spec.clip_output
     )
 
 

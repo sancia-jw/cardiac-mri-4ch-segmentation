@@ -1,0 +1,30 @@
+# Lower-frequency follow-up to configs/raster_emd_ablation.yaml (Gastro raster EMD).
+#
+# The first run (Kaggle, seeds 42-44) found removing the finest IMFs hurts
+# (IMF 0: -0.016, IMF 1: -0.020, IMFs 0+1: -0.068 test fg Dice) and removing the
+# 3 slowest (Gastro's setting) is neutral (-0.004 +/- 0.005). These conditions
+# fill in the lower-frequency IMFs in between. Raster period on real frames:
+# IMF 2 ~43 px, IMF 3 ~100 px, IMF 4 ~220 px, IMF 5+ span several image rows.
+#
+# Meant for a local run; same controls as the Kaggle run, seed 42.
+
+experiment: raster_emd_lowfreq
+
+train:
+  catalog: raster_emd
+  epochs: 15
+  batch_size: 4
+  lr: 0.001
+  seed: 42
+  device: auto
+  exclusions: configs/bemd_exclusions.json
+  runs:
+    - original
+    - subtract_remd_2
+    - subtract_remd_3
+    - subtract_remd_4
+    - subtract_remd_5plus
+
+reconstruction:
+  style: amplitude_faithful
+  clip_output: true

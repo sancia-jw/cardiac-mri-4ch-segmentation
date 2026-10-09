@@ -241,7 +241,8 @@ def train_bemd_run(
         val_cases = load_split_cases(splits_csv, "val", data_root=data_root)
 
     print(f"\n=== Run: {spec.run_id} ({spec.decomposition_method}) ===")
-    print(f"Enhance: mode={spec.mode} indices={list(spec.bimf_indices)}")
+    tail = "" if spec.tail_from is None else f" + {spec.tail_from}..last"
+    print(f"Enhance: mode={spec.mode} indices={list(spec.bimf_indices)}{tail}")
     if spec.uses_bemd_cache:
         print(f"BEMD cache: {bemd_cache_root}")
 
