@@ -1,0 +1,53 @@
+# Training-recipe experiments for 4CH segmentation (no decomposition).
+#
+# Every condition is trained at every seed and tested on the same 15 test
+# cases as earlier experiments (outputs/splits_4ch.csv). Metrics are computed
+# on the native pixel grid, Dice pooled over all frames of a case and then
+# averaged over cases (fg = mean of the 5 foreground classes). The `legacy`
+# condition re-trains the earlier baseline recipe so every row is measured
+# the same way.
+#
+# Conditions (each adds one thing to the one above it, except smp_r34_t3):
+#   legacy      earlier baseline: 160x160 resize, per-frame min-max, mirror flips,
+#               3-level U-Net, Adam 1e-3, batch 4, 15 epochs, best-val checkpoint
+#   recipe      native resolution, per-case percentile z-score, rotation/scale/elastic
+#               and intensity augmentation (no mirroring), 6-level residual U-Net,
+#               AdamW + cosine schedule, batch 16, 80 x 250 steps, final weights
+#   recipe_t5   + the 2 cine phases either side of each frame as extra channels
+#   t5_extra    + the 15 annotated 4CH_VAL cases (106-120) in training
+#   t5_full     + the 16 validation cases in training (105 cases, no model selection)
+#   smp_r34_t3  recipe with an ImageNet-pretrained ResNet-34 U-Net, 3 phases as RGB
+
+seeds: [42, 43, 44]
+
+conditions:
+  legacy:
+    preset: legacy
+    model: unet_legacy
+    context: 1
+    aug: legacy
+    epochs: 15
+    steps_per_epoch: 0   # one pass over the training frames
+    batch_size: 4
+    lr: 0.001
+    optimizer: adam
+    schedule: constant
+    warmup_epochs: 0
+    amp: false
+    checkpoint: best_val
+    val_every: 1
+  recipe:
+    context: 1
+  recipe_t5:
+    context: 5
+  t5_extra:
+    context: 5
+    extra_train: [4CH_VAL]
+  t5_full:
+    context: 5
+    extra_train: [4CH_VAL]
+    train_on_val: true
+  smp_r34_t3:
+    model: smp_resnet34
+    context: 3
+    lr: 0.0005
