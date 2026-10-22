@@ -1,0 +1,34 @@
+# Round 3: two new techniques on top of the round-1 recipe (configs/improve.yaml).
+#
+# Temporal consistency across the cine loop (cine_4ch/improve_semi.py):
+#   t5_tc         recipe_t5 + area-dynamics loss: on annotated triplets of
+#                 consecutive phases, the predicted change in each structure's
+#                 area must match the annotated change
+#   t5_tc_smooth  t5_tc + the 30 unannotated 4CH_TST cine loops, where each
+#                 structure's area curve is kept smooth over phases (curvature
+#                 above 4 % of the area is penalised)
+#
+# Partial labels from another dataset:
+#   recipe_cmrx   recipe (1 channel) + CMRxRecon 4CH frames (four chambers, no
+#                 myocardium) mixed into every batch (6 of 16) with a marginal
+#                 loss that merges background and myocardium; needs the
+#                 4CH_CMRX folder made by scripts/convert_cmrxrecon.py
+#
+# Compare t5_* with round-1 recipe_t5 (0.9001, ensemble 0.9034) and
+# recipe_cmrx with round-1 recipe (0.8991, ensemble 0.9023).
+
+seeds: [42, 43, 44]
+
+conditions:
+  t5_tc:
+    context: 5
+    temporal_weight: 0.5
+  t5_tc_smooth:
+    context: 5
+    temporal_weight: 0.5
+    smooth_weight: 0.5
+    unlabelled: [4CH_TST]
+  recipe_cmrx:
+    context: 1
+    external: 4CH_CMRX
+    external_frac: 0.375

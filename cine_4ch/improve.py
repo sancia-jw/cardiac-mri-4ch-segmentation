@@ -115,6 +115,7 @@ class CaseVolume:
     native_hw: Tuple[int, int]
     offset: Tuple[int, int]  # top-left of the (scaled) image inside the canvas
     scaled_hw: Optional[Tuple[int, int]] = None  # image size on the model grid when upsampled
+    triplets: Optional[np.ndarray] = None  # (T, 3) phases t-1, t, t+1 within each cine loop
 
 
 def canvas_shape(cases_hw: Sequence[Tuple[int, int]], multiple: int = 32) -> Tuple[int, int]:
@@ -147,8 +148,8 @@ def load_cases(
 ) -> List[CaseVolume]:
     """Load and preprocess cases. ``canvas`` is required for the canvas preset.
 
-    ``upsample`` > 1 (canvas preset) enlarges image (bilinear) and training label (nearest)
-    before padding; evaluation still uses the native label.
+    ``upsample`` > 1 (canvas preset) enlarges image (bilinear) and training label
+    (nearest) before padding; evaluation still uses the native label.
     """
     offsets = context_offsets(context)
     out: List[CaseVolume] = []
@@ -179,7 +180,8 @@ def load_cases(
             raise ValueError(f"Unknown preset {preset}")
         out.append(CaseVolume(case.stem, img.astype(np.float32), lab, label_t, neighbour_index(blocks, offsets),
                               tuple(native_hw), offset,
-                              lab_shape(native_hw, upsample) if preset == "canvas" else None))
+                              lab_shape(native_hw, upsample) if preset == "canvas" else None,
+                              neighbour_index(blocks, [-1, 0, 1])))
     return out
 
 
@@ -403,6 +405,15 @@ class RunConfig:
     train_on_val: bool = False
     val_every: int = 5
     upsample: float = 1.0  # canvas preset: train and predict on an enlarged grid
+    # cine_4ch.improve_semi: temporal consistency and partial-label external data
+    temporal_weight: float = 0.0
+    smooth_weight: float = 0.0
+    smooth_tolerance: float = 0.04
+    unlabelled: List[str] = field(default_factory=list)  # image-only views, e.g. ["4CH_TST"]
+    unlabelled_triplets: int = 4
+    external: Optional[str] = None  # folder under --extra-root, e.g. "4CH_CMRX"
+    external_frac: float = 0.375
+    external_merge: List[int] = field(default_factory=lambda: [0, 2])  # myocardium not annotated
 
     @property
     def augment_config(self) -> AugmentConfig:

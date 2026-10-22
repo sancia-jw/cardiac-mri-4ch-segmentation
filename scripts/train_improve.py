@@ -29,7 +29,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from cine_4ch import improve  # noqa: E402
+from cine_4ch import improve, improve_semi  # noqa: E402
 from cine_4ch.io import CasePair, collect_nii_paths, extract_case_id, load_volume  # noqa: E402
 
 SUMMARY_FIELDS = ["condition", "seed", "fg", "fg_lcc", "legacy_fg"] + [
@@ -61,7 +61,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs/improve.yaml")
     ap.add_argument("--data-root", type=Path, required=True, help="Folder containing 4CH_TR/")
-    ap.add_argument("--extra-root", type=Path, default=None, help="Folder containing extra views, e.g. 4CH_VAL/")
+    ap.add_argument("--extra-root", type=Path, nargs="+", default=[],
+                    help="Folder(s) containing extra views, e.g. 4CH_VAL/, 4CH_TST/, 4CH_CMRX/")
     ap.add_argument("--splits-csv", type=Path, default=PROJECT_ROOT / "outputs/splits_4ch.csv")
     ap.add_argument("--output-root", type=Path, required=True)
     ap.add_argument("--seeds", type=int, nargs="+", default=None)
@@ -82,26 +83,42 @@ def main() -> int:
         raise SystemExit(f"Unknown conditions: {unknown}")
 
     splits = split_cases(args.splits_csv, args.data_root)
-    extra_views = sorted({v for n in names for v in conds[n].extra_train})
-    extra = {}
-    for view in extra_views:
-        found = discover_view(args.extra_root, view) if args.extra_root else []
+    def needs(n):
+        c = conds[n]
+        return set(c.extra_train) | ({c.external} if c.external else set()) | (
+            set(c.unlabelled) if c.smooth_weight else set())
+
+    extra, unlabelled = {}, {}
+    for view in sorted({v for n in names for v in needs(n)}):
+        image_only = all(view not in conds[n].extra_train and view != conds[n].external
+                         for n in names if view in needs(n))
+        found = []
+        for root in args.extra_root:
+            found = (sorted(collect_nii_paths(root / view / "image").values()) if image_only
+                     else discover_view(root, view))
+            if found:
+                break
         if not found:
-            skipped = [n for n in names if view in conds[n].extra_train]
+            skipped = [n for n in names if view in needs(n)]
             print(f"WARNING: no {view} cases under --extra-root {args.extra_root}; skipping {skipped}")
             names = [n for n in names if n not in skipped]
+        elif image_only:
+            unlabelled[view] = found
         else:
             extra[view] = found
     if args.max_cases:
         splits = {k: v[:args.max_cases] for k, v in splits.items()}
         extra = {k: v[:args.max_cases] for k, v in extra.items()}
+        unlabelled = {k: v[:args.max_cases] for k, v in unlabelled.items()}
 
     shapes = []
     for case in [c for v in splits.values() for c in v] + [c for v in extra.values() for c in v]:
         shape = load_volume(case.image_path)[0].shape
         shapes.append(shape[:2])
+    for path in [p for v in unlabelled.values() for p in v]:
+        shapes.append(load_volume(path)[0].shape[:2])
     canvas = improve.canvas_shape(shapes)
-    print(f"Cases: " + ", ".join(f"{k}={len(v)}" for k, v in {**splits, **extra}.items()))
+    print(f"Cases: " + ", ".join(f"{k}={len(v)}" for k, v in {**splits, **extra, **unlabelled}.items()))
     print(f"Native sizes: {sorted(set(shapes))} -> canvas {canvas}")
     print(f"Conditions: {names}\nSeeds: {seeds}")
     for n in names:
@@ -162,7 +179,23 @@ def main() -> int:
             run_dir.mkdir(parents=True, exist_ok=True)
             improve.write_json(run_dir / "config.json", {**asdict(cfg), "seed": seed, "canvas": list(train_vols[0].image.shape[1:]),
                                                          "train_cases": [v.stem for v in train_vols]})
-            model = improve.train(cfg, train_vols, val_vols, device, seed, run_dir)
+            if improve_semi.uses_semi(cfg):
+                unl_vols = []
+                if cfg.smooth_weight:
+                    key = ("unlabelled", cfg.context, tuple(cfg.unlabelled))
+                    if key not in cache:
+                        grid = improve.canvas_shape(shapes)
+                        cache[key] = improve_semi.load_unlabelled(
+                            [p for v in cfg.unlabelled for p in unlabelled[v]], cfg.context, grid)
+                    unl_vols = cache[key]
+                ext_vols = []
+                if cfg.external:
+                    ext_vols = volumes(cfg, [], [cfg.external])
+                    improve_semi.static_context(ext_vols, cfg.context)
+                model = improve_semi.train_semi(cfg, train_vols, val_vols, device, seed, run_dir,
+                                                unlabelled_vols=unl_vols, external_vols=ext_vols)
+            else:
+                model = improve.train(cfg, train_vols, val_vols, device, seed, run_dir)
             metrics, rows = improve.evaluate([model], test_vols, cfg.preset, device)
             minutes = (time.time() - t0) / 60
             durations[name] = time.time() - t0

@@ -143,6 +143,10 @@ class ConfigTests(unittest.TestCase):
         conds2 = {n: improve.run_config_from_dict(n, s) for n, s in raw2["conditions"].items()}
         self.assertEqual(conds2["t5_extra_hr"].upsample, 1.5)
         self.assertEqual(conds2["t5_hr"].extra_train, [])
+        raw3 = yaml.safe_load((Path(__file__).resolve().parent.parent / "configs/improve_round3.yaml").read_text())
+        conds3 = {n: improve.run_config_from_dict(n, s) for n, s in raw3["conditions"].items()}
+        self.assertEqual(conds3["t5_tc_smooth"].unlabelled, ["4CH_TST"])
+        self.assertEqual(conds3["recipe_cmrx"].external, "4CH_CMRX")
 
 
 if __name__ == "__main__":
