@@ -108,7 +108,7 @@ def main() -> int:
         c = conds[n]
         print(f"  {n}: preset={c.preset} model={c.model} context={c.context} aug={c.aug} epochs={c.epochs} "
               f"steps={c.steps_per_epoch} bs={c.batch_size} lr={c.lr} extra={c.extra_train} "
-              f"train_on_val={c.train_on_val} checkpoint={c.checkpoint}")
+              f"train_on_val={c.train_on_val} checkpoint={c.checkpoint} upsample={c.upsample}")
     if args.validate_only:
         from collections import Counter
 
@@ -131,10 +131,11 @@ def main() -> int:
     durations: dict[str, float] = {}
 
     def volumes(cfg, split_names, views=()):
-        key = (cfg.preset, cfg.context, tuple(split_names), tuple(views))
+        key = (cfg.preset, cfg.context, cfg.upsample, tuple(split_names), tuple(views))
         if key not in cache:
             cases = [c for s in split_names for c in splits[s]] + [c for v in views for c in extra[v]]
-            cache[key] = improve.load_cases(cases, cfg.preset, cfg.context, canvas)
+            grid = improve.canvas_shape([improve.scaled_size(hw, cfg.upsample) for hw in shapes])
+            cache[key] = improve.load_cases(cases, cfg.preset, cfg.context, grid, cfg.upsample)
         return cache[key]
 
     for name in names:
@@ -159,7 +160,7 @@ def main() -> int:
                   f"{sum(v.image.shape[0] for v in train_vols)} frames ===")
             t0 = time.time()
             run_dir.mkdir(parents=True, exist_ok=True)
-            improve.write_json(run_dir / "config.json", {**asdict(cfg), "seed": seed, "canvas": list(canvas),
+            improve.write_json(run_dir / "config.json", {**asdict(cfg), "seed": seed, "canvas": list(train_vols[0].image.shape[1:]),
                                                          "train_cases": [v.stem for v in train_vols]})
             model = improve.train(cfg, train_vols, val_vols, device, seed, run_dir)
             metrics, rows = improve.evaluate([model], test_vols, cfg.preset, device)

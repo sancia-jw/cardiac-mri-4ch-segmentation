@@ -1,0 +1,31 @@
+# Round 2 of the training-recipe experiments (see configs/improve.yaml and
+# docs/improve_kaggle.md). Round 1 (2026-10-21, 3 seeds): recipe_t5 reached
+# 0.900 test fg Dice (ensemble 0.903) vs 0.880 for the retrained legacy
+# recipe; validation plateaued from epoch ~25, so the model looks data-limited.
+#
+# Round 2 tests more annotated data and a finer grid for the thin myocardium.
+# All conditions use the round-1 recipe with 5 cine phases (recipe_t5).
+#   t5_extra     + the 15 annotated 4CH_VAL cases (106-120) in training
+#   t5_full      + the 16 validation cases as well (105 cases; no model selection)
+#   t5_extra_hr  t5_extra on a 1.5x upsampled grid (predictions resampled to
+#                the native grid for scoring); ~2x compute
+#   t5_hr        recipe_t5 on the 1.5x grid; runs even without 4CH_VAL
+# Compare with round-1 recipe_t5 (same test cases, same seeds).
+
+seeds: [42, 43, 44]
+
+conditions:
+  t5_extra:
+    context: 5
+    extra_train: [4CH_VAL]
+  t5_full:
+    context: 5
+    extra_train: [4CH_VAL]
+    train_on_val: true
+  t5_extra_hr:
+    context: 5
+    extra_train: [4CH_VAL]
+    upsample: 1.5
+  t5_hr:
+    context: 5
+    upsample: 1.5

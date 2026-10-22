@@ -66,6 +66,13 @@ class PreprocessTests(unittest.TestCase):
             self.assertEqual(vol.native_label.shape, (30, 30, 26))
             top, left = vol.offset
             np.testing.assert_array_equal(vol.label[:, top:top + 30, left:left + 26], vol.native_label)
+            up = improve.load_cases([case], "canvas", 1, improve.canvas_shape([(45, 39)]), upsample=1.5)[0]
+            self.assertEqual(up.scaled_hw, (45, 39))
+            self.assertEqual(up.image.shape, (30, 64, 64))
+            self.assertEqual(up.native_label.shape, (30, 30, 26))
+            model = torch.nn.Conv2d(1, 6, 1)
+            probs = improve.predict_case([model], up, "canvas", torch.device("cpu"))
+            self.assertEqual(probs.shape, (30, 6, 30, 26))
             legacy = improve.load_cases([case], "legacy", 1)[0]
             self.assertEqual(legacy.image.shape, (30, *improve.LEGACY_SIZE))
             self.assertLessEqual(float(legacy.image.max()), 1.0)
@@ -132,6 +139,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(conds["legacy"].preset, "legacy")
         self.assertEqual(conds["recipe_t5"].context, 5)
         self.assertTrue(conds["t5_full"].train_on_val)
+        raw2 = yaml.safe_load((Path(__file__).resolve().parent.parent / "configs/improve_round2.yaml").read_text())
+        conds2 = {n: improve.run_config_from_dict(n, s) for n, s in raw2["conditions"].items()}
+        self.assertEqual(conds2["t5_extra_hr"].upsample, 1.5)
+        self.assertEqual(conds2["t5_hr"].extra_train, [])
 
 
 if __name__ == "__main__":

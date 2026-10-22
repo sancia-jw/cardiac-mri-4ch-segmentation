@@ -113,7 +113,8 @@ class CaseVolume:
     native_label: np.ndarray  # (T, h, w) uint8, original grid (evaluation)
     neighbours: np.ndarray  # (T, K)
     native_hw: Tuple[int, int]
-    offset: Tuple[int, int]  # top-left of native image inside the canvas
+    offset: Tuple[int, int]  # top-left of the (scaled) image inside the canvas
+    scaled_hw: Optional[Tuple[int, int]] = None  # image size on the model grid when upsampled
 
 
 def canvas_shape(cases_hw: Sequence[Tuple[int, int]], multiple: int = 32) -> Tuple[int, int]:
@@ -142,8 +143,13 @@ def load_cases(
     preset: str,
     context: int,
     canvas: Optional[Tuple[int, int]] = None,
+    upsample: float = 1.0,
 ) -> List[CaseVolume]:
-    """Load and preprocess cases. ``canvas`` is required for the canvas preset."""
+    """Load and preprocess cases. ``canvas`` is required for the canvas preset.
+
+    ``upsample`` > 1 (canvas preset) enlarges image (bilinear) and training label (nearest)
+    before padding; evaluation still uses the native label.
+    """
     offsets = context_offsets(context)
     out: List[CaseVolume] = []
     for case in cases:
@@ -162,13 +168,27 @@ def load_cases(
             if canvas is None:
                 raise ValueError("canvas preset needs a canvas shape")
             norm = np.moveaxis(normalize_volume(image), -1, 0)
+            lab = label_t
+            if upsample != 1.0:
+                size = scaled_size(native_hw, upsample)
+                norm = _resize_stack(norm, size, "bilinear")
+                lab = _resize_stack(label_t, size, "nearest").astype(np.uint8)
             img, offset = _pad_to(norm, canvas, float(norm.min()))
-            lab, _ = _pad_to(label_t, canvas, 0)
+            lab, _ = _pad_to(lab, canvas, 0)
         else:
             raise ValueError(f"Unknown preset {preset}")
         out.append(CaseVolume(case.stem, img.astype(np.float32), lab, label_t, neighbour_index(blocks, offsets),
-                              tuple(native_hw), offset))
+                              tuple(native_hw), offset,
+                              lab_shape(native_hw, upsample) if preset == "canvas" else None))
     return out
+
+
+def scaled_size(hw: Sequence[int], upsample: float) -> Tuple[int, int]:
+    return (int(round(hw[0] * upsample)), int(round(hw[1] * upsample)))
+
+
+def lab_shape(hw: Sequence[int], upsample: float) -> Tuple[int, int]:
+    return scaled_size(hw, upsample) if upsample != 1.0 else (int(hw[0]), int(hw[1]))
 
 
 class GPUFrames:
@@ -382,6 +402,7 @@ class RunConfig:
     extra_train: List[str] = field(default_factory=list)  # e.g. ["4CH_VAL"]
     train_on_val: bool = False
     val_every: int = 5
+    upsample: float = 1.0  # canvas preset: train and predict on an enlarged grid
 
     @property
     def augment_config(self) -> AugmentConfig:
@@ -425,7 +446,10 @@ def predict_case(models: Sequence[nn.Module], vol: CaseVolume, preset: str, devi
             if preset == "legacy":
                 logits = F.interpolate(logits, size=(h, w), mode="bilinear", align_corners=False)
             else:
-                logits = logits[:, :, top:top + h, left:left + w]
+                sh, sw = vol.scaled_hw or (h, w)
+                logits = logits[:, :, top:top + sh, left:left + sw]
+                if (sh, sw) != (h, w):
+                    logits = F.interpolate(logits, size=(h, w), mode="bilinear", align_corners=False)
             probs = probs + logits.softmax(1)
         out[start:start + len(idx)] = (probs / len(models)).cpu().numpy()
     return out
